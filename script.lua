@@ -687,6 +687,9 @@ function Library:Unload()
         if w.Notifications and w.Notifications.Gui then
             pcall(function() w.Notifications.Gui:Destroy() end)
         end
+        if w.BlurController then
+            pcall(function() w.BlurController:Destroy() end)
+        end
     end
     self.Windows = {}
     table.clear(themeSubs)
@@ -2117,6 +2120,97 @@ local function createNotifications(window)
 end
 
 --// ============================================================
+--// Blur controller — UI-overlay frosted glass. Each registered
+--// target gets a child Frame with the parent's rounded shape and
+--// a translucent dark gradient. Because the overlay is a child of
+--// the target, it's naturally clipped to the element's bounds
+--// (and its UICorner) — no DOF kernel bleed, no glass refraction
+--// artifacts, no per-frame projection math.
+--// Built-in targets by name: "Sidebar", "Keybinds", "Notifications".
+--// Pass an explicit Frame to :Add(name, frame) to blur an arbitrary
+--// element. :SetIntensity controls overlay opacity (0..1).
+--// ============================================================
+local function createBlurController(window)
+    local BC = {Targets = {}, Window = window, Intensity = 0}
+
+    -- Built-in target resolvers — names that map to library-owned frames.
+    -- Late-bound (called at :Add time) so MainPage / KeybindList / Notifications
+    -- don't have to exist when createBlurController runs.
+    local builtins = {
+        Sidebar = function() return window.MainPage and window.MainPage:FindFirstChild("SideBar") end,
+        Keybinds = function() return window.KeybindList and window.KeybindList.Frame end,
+        Notifications = function() return window.Notifications and window.Notifications.Container end,
+    }
+
+    -- Clone the host frame's UICorner shape onto the overlay so the
+    -- frosted layer follows the element's rounded edges instead of
+    -- painting a sharp rectangle inside a pill.
+    local function matchCorner(overlay, host)
+        local hostCorner = host:FindFirstChildOfClass("UICorner")
+        if hostCorner then
+            new("UICorner", {Parent = overlay, CornerRadius = hostCorner.CornerRadius})
+        end
+    end
+
+    function BC:Add(name, frame)
+        if self.Targets[name] then return self.Targets[name] end
+        if not frame and builtins[name] then frame = builtins[name]() end
+        if not frame then return nil end
+
+        -- Child overlay: dark translucent base + gradient for the frosted
+        -- look. ZIndex -1 so it sits behind the host's other children but
+        -- in front of the host's own background. Transparency is 1-Intensity
+        -- so Intensity=0 hides it and Intensity=1 makes it fully opaque.
+        local overlay = new("Frame", {
+            Name = "\0BlurOverlay", Parent = frame,
+            Size = UDim2.fromScale(1, 1),
+            Position = UDim2.fromScale(0, 0),
+            BackgroundColor3 = Color3.fromRGB(15, 20, 30),
+            BackgroundTransparency = 1 - BC.Intensity,
+            BorderSizePixel = 0,
+            ZIndex = -1,
+        })
+        matchCorner(overlay, frame)
+        new("UIGradient", {
+            Parent = overlay,
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(55, 65, 85)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 20, 30)),
+            }),
+            Rotation = 135,
+        })
+
+        local t = {Frame = frame, Overlay = overlay}
+        self.Targets[name] = t
+        return t
+    end
+
+    function BC:Remove(name)
+        local t = self.Targets[name]
+        if not t then return end
+        pcall(function() t.Overlay:Destroy() end)
+        self.Targets[name] = nil
+    end
+
+    function BC:Has(name) return self.Targets[name] ~= nil end
+
+    function BC:SetIntensity(v)
+        self.Intensity = v
+        for _, t in pairs(self.Targets) do
+            if t.Overlay then
+                t.Overlay.BackgroundTransparency = 1 - v
+            end
+        end
+    end
+
+    function BC:Destroy()
+        for name in pairs(self.Targets) do self:Remove(name) end
+    end
+
+    return BC
+end
+
+--// ============================================================
 --// Keybind state context menu — right-click any keybind pill to
 -- open this; lets the user swap between Hold and Toggle runtime
 -- modes. Header + two stacked Hold/Toggle buttons. UIScale 0→1
@@ -2352,6 +2446,13 @@ function Library:CreateWindow(config)
 
     -- Notification stack (bottom-center). API: :Notify(text, opts).
     Window.Notifications = createNotifications(Window)
+
+    -- Blur controller — UI-overlay frosted glass, clipped to each target's
+    -- bounds (and its UICorner). API:
+    -- :Add("Sidebar"|"Keybinds"|"Notifications"|name, frame?), :Remove(name),
+    -- :SetIntensity(0..1), :Has(name), :Destroy(). Resolves built-in names
+    -- lazily so MainPage doesn't have to exist yet.
+    Window.BlurController = createBlurController(Window)
 
     -- Modal click-blocker. Invisible full-screen TextButton sitting under any
     -- open popup. While a popup is up, this absorbs every click that *isn't*
