@@ -2447,7 +2447,11 @@ function Library:CreateWindow(config)
     -- UIScale drives the open/close animation. AnchorPoint is (0.5, 0.5)
     -- so Scale 0 → 1 collapses to / expands from the center of the screen.
     -- Sidebar is a child of MainPage so it scales together.
-    local rootScale = new("UIScale", {Parent = mainPage, Scale = 1})
+    -- Initial Scale = 0 collapses the window before the first-load entrance
+    -- pop. The tween is fired via task.defer at the end of CreateWindow so
+    -- the user's synchronous AddTab/AddSection setup completes first —
+    -- otherwise the spring would play to an empty/half-built window.
+    local rootScale = new("UIScale", {Parent = mainPage, Scale = 0})
     Window._rootScale = rootScale
 
     -- Sidebar
@@ -3034,6 +3038,17 @@ function Library:CreateWindow(config)
     end)
 
     table.insert(Library.Windows, Window)
+
+    -- First-load entrance animation. Deferred so the user's AddTab /
+    -- AddSection chain runs synchronously first — by the time this fires
+    -- on the next frame, the UI is fully built and the spring plays to a
+    -- complete window. Back-Out easing matches the menu-toggle pop but
+    -- slightly longer (0.55s vs 0.32s) so the first impression lands.
+    task.defer(function()
+        tween(rootScale, {Scale = 1},
+            TweenInfo.new(0.55, Enum.EasingStyle.Back, Enum.EasingDirection.Out))
+    end)
+
     return Window
 end
 
