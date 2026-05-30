@@ -3849,7 +3849,7 @@ buildSection = function(Tab, config)
                 Parent = rightHolder, LayoutOrder = 2,
                 BackgroundColor3 = Theme.BgHeader,
                 BorderSizePixel = 0,
-                Text = KB.Key and KB.Key.Name or "—",
+                Text = KB.Key and KB.Key.Name or "NONE",
                 TextColor3 = Theme.Text,
                 FontFace = FONT_MED, TextSize = 14,
                 AutomaticSize = Enum.AutomaticSize.XY,
@@ -3922,7 +3922,7 @@ buildSection = function(Tab, config)
 
             function KB:Set(k)
                 self.Key = k
-                pill.Text = k and k.Name or "—"
+                pill.Text = k and k.Name or "NONE"
                 syncList()
             end
 
@@ -4562,7 +4562,7 @@ buildSection = function(Tab, config)
             AutomaticSize = Enum.AutomaticSize.XY,
             BackgroundColor3 = Theme.BgHeader,
             BorderSizePixel = 0,
-            Text = KB.Key and KB.Key.Name or "—",
+            Text = KB.Key and KB.Key.Name or "NONE",
             TextColor3 = Theme.Text,
             FontFace = FONT_MED, TextSize = 14,
             AutoButtonColor = false,
@@ -4600,7 +4600,7 @@ buildSection = function(Tab, config)
 
         function KB:Set(k)
             self.Key = k
-            pill.Text = k and k.Name or "—"
+            pill.Text = k and k.Name or "NONE"
             syncList()
         end
         -- KB:Set is intentionally minimal (visual + list only). The setter
