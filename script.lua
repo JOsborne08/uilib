@@ -1671,12 +1671,17 @@ local function createNotifications(window)
         local duration = opts.Duration
         local showProgress = duration ~= nil
         local promptObj = {_dismissed = false}
+        local PROMPT_WIDTH = opts.Width or 380
 
+        -- Wrapper is fixed-width + auto-height. ClipsDescendants is set so
+        -- the entrance/exit height tween cleanly clips the contents. Fixed
+        -- width avoids the AutomaticSize loop where Scale=1 children
+        -- (progress bar) would force the parent to grow indefinitely.
         local wrapper = new("Frame", {
             Name = "PromptWrap", Parent = promptHolder,
             BackgroundTransparency = 1, BorderSizePixel = 0,
-            AutomaticSize = Enum.AutomaticSize.XY,
-            Size = UDim2.new(0, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Size = UDim2.new(0, PROMPT_WIDTH, 0, 0),
             ClipsDescendants = true,
         })
 
@@ -1685,8 +1690,8 @@ local function createNotifications(window)
             BackgroundColor3 = Theme.Background,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            Size = UDim2.new(0, 1, 0, 30),
-            AutomaticSize = Enum.AutomaticSize.XY,
+            Size = UDim2.new(1, 0, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.Y,
         })
         themed(notif, "BackgroundColor3", "Background")
         new("UICorner", {Parent = notif, CornerRadius = UDim.new(0, 6)})
@@ -1694,14 +1699,17 @@ local function createNotifications(window)
 
         local notifScale = new("UIScale", {Parent = notif, Scale = 0.92})
 
-        -- ── Header (icon + title on left, collapse + close on right)
+        -- ── Header (icon + title on left, collapse + close on right).
+        -- No UIListLayout — left/right alignment is done via AnchorPoint
+        -- so the title can sit on the left edge while the close button
+        -- sticks to the right regardless of how short the title is.
         local header = new("Frame", {
             Name = "Header", Parent = notif, LayoutOrder = 0,
             BackgroundColor3 = Theme.BgDark,
             BackgroundTransparency = 1,
             BorderSizePixel = 0,
-            Size = UDim2.new(0, 1, 0, 30),
-            AutomaticSize = Enum.AutomaticSize.XY,
+            Size = UDim2.new(1, 0, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.Y,
         })
         themed(header, "BackgroundColor3", "BgDark")
         new("UICorner", {Parent = header, CornerRadius = UDim.new(0, 6)})
@@ -1710,15 +1718,11 @@ local function createNotifications(window)
             PaddingTop = UDim.new(0, 4), PaddingRight = UDim.new(0, 4),
             PaddingLeft = UDim.new(0, 6),
         })
-        new("UIListLayout", {
-            Parent = header,
-            FillDirection = Enum.FillDirection.Horizontal,
-            Padding = UDim.new(0, 24),
-            SortOrder = Enum.SortOrder.LayoutOrder,
-        })
 
         local leftHolder = new("Frame", {
-            Name = "Holder", Parent = header, LayoutOrder = 0,
+            Name = "Holder", Parent = header,
+            AnchorPoint = Vector2.new(0, 0),
+            Position = UDim2.new(0, 0, 0, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             Size = UDim2.new(0, 64, 0, 30),
             AutomaticSize = Enum.AutomaticSize.XY,
@@ -1775,7 +1779,9 @@ local function createNotifications(window)
 
         -- ── Control buttons (right side)
         local controlHolder = new("Frame", {
-            Name = "ControlHolder", Parent = header, LayoutOrder = 1,
+            Name = "ControlHolder", Parent = header,
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, 0, 0, 0),
             BackgroundTransparency = 1, BorderSizePixel = 0,
             Size = UDim2.new(0, 1, 0, 30),
             AutomaticSize = Enum.AutomaticSize.XY,
@@ -1794,8 +1800,8 @@ local function createNotifications(window)
             descHolder = new("Frame", {
                 Name = "DescriptionHolder", Parent = notif, LayoutOrder = 1,
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(0, 1, 0, 10),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.Y,
             })
             new("UIListLayout", {
                 Parent = descHolder,
@@ -1814,8 +1820,8 @@ local function createNotifications(window)
             local textHolder = new("Frame", {
                 Name = "TextHolder", Parent = descHolder, LayoutOrder = 0,
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(1, 1, 0, 10),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.Y,
             })
             new("UIPadding", {Parent = textHolder, PaddingLeft = UDim.new(0, 26)})
             new("UIListLayout", {Parent = textHolder, SortOrder = Enum.SortOrder.LayoutOrder})
@@ -1826,13 +1832,13 @@ local function createNotifications(window)
                 TextColor3 = Theme.TextDim,
                 FontFace = FONT_MED, TextSize = 14,
                 RichText = true,
+                TextWrapped = true,
                 TextXAlignment = Enum.TextXAlignment.Left,
-                Size = UDim2.new(0, 1, 0, 1),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 1),
+                AutomaticSize = Enum.AutomaticSize.Y,
                 TextTransparency = 1,
             })
             themed(descLbl, "TextColor3", "TextDim")
-            new("UISizeConstraint", {Parent = descLbl, MaxSize = Vector2.new(320, math.huge)})
         end
 
         -- Action buttons (Continue / Cancel etc).
@@ -1841,8 +1847,8 @@ local function createNotifications(window)
             local btnHolder = new("Frame", {
                 Name = "ButtonHolder", Parent = descHolder, LayoutOrder = 1,
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(0, 1, 0, 10),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.Y,
             })
             new("UIPadding", {Parent = btnHolder, PaddingLeft = UDim.new(0, 26)})
             new("UIListLayout", {
@@ -1894,7 +1900,7 @@ local function createNotifications(window)
                     if btnCfg.Callback then pcall(btnCfg.Callback) end
                     promptObj:Dismiss()
                 end)
-                buttonRefs[i] = {btn = btn, txt = txt}
+                buttonRefs[i] = {btn = btn, txt = txt, primary = isPrimary}
             end
         end
 
@@ -1943,69 +1949,45 @@ local function createNotifications(window)
                 BackgroundColor3 = Theme.BgDark,
                 BackgroundTransparency = 1,
                 BorderSizePixel = 0,
-                Size = UDim2.new(1, 1, 0, 20),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 30),
+                AutomaticSize = Enum.AutomaticSize.Y,
             })
             themed(progHolder, "BackgroundColor3", "BgDark")
             new("UICorner", {Parent = progHolder, CornerRadius = UDim.new(0, 6)})
-            new("UIPadding", {Parent = progHolder, PaddingRight = UDim.new(0, 12)})
+            new("UIPadding", {
+                Parent = progHolder,
+                PaddingRight = UDim.new(0, 12),
+                PaddingLeft = UDim.new(0, 12),
+                PaddingTop = UDim.new(0, 6),
+                PaddingBottom = UDim.new(0, 8),
+            })
             new("UIListLayout", {
                 Parent = progHolder,
-                FillDirection = Enum.FillDirection.Horizontal,
-                SortOrder = Enum.SortOrder.LayoutOrder,
-            })
-
-            local innerHolder = new("Frame", {
-                Name = "Holder", Parent = progHolder,
-                BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(0, 1, 0, 1),
-                AutomaticSize = Enum.AutomaticSize.XY,
-            })
-            new("UIListLayout", {
-                Parent = innerHolder,
                 Padding = UDim.new(0, 6),
                 SortOrder = Enum.SortOrder.LayoutOrder,
             })
 
-            local stopWrap = new("Frame", {
-                Name = "TextHolder", Parent = innerHolder, LayoutOrder = 0,
-                BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(0, 1, 0, 10),
-                AutomaticSize = Enum.AutomaticSize.XY,
-            })
-            new("UIPadding", {
-                Parent = stopWrap,
-                PaddingTop = UDim.new(0, 6),
-                PaddingLeft = UDim.new(0, 12),
-            })
-            new("UIListLayout", {
-                Parent = stopWrap,
-                FillDirection = Enum.FillDirection.Horizontal,
-                Padding = UDim.new(0, 12),
-                SortOrder = Enum.SortOrder.LayoutOrder,
-            })
             progStopBtn = new("TextButton", {
-                Parent = stopWrap, LayoutOrder = 0,
+                Name = "Stop", Parent = progHolder, LayoutOrder = 0,
                 BackgroundTransparency = 1,
                 Text = opts.ProgressText or 'click to <b>stop</b>',
                 TextColor3 = Theme.TextSub,
                 FontFace = FONT_MED, TextSize = 14,
                 RichText = true,
-                Size = UDim2.new(0, 1, 0, 1),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(0, 1, 0, 14),
+                AutomaticSize = Enum.AutomaticSize.X,
                 AutoButtonColor = false,
+                TextXAlignment = Enum.TextXAlignment.Left,
                 TextTransparency = 1,
             })
             themed(progStopBtn, "TextColor3", "TextSub")
             progStopBtn.MouseButton1Click:Connect(function() promptObj:Dismiss() end)
 
             local barRow = new("Frame", {
-                Name = "Progressbar", Parent = innerHolder, LayoutOrder = 1,
+                Name = "Progressbar", Parent = progHolder, LayoutOrder = 1,
                 BackgroundTransparency = 1, BorderSizePixel = 0,
-                Size = UDim2.new(1, 1, 0, 5),
-                AutomaticSize = Enum.AutomaticSize.XY,
+                Size = UDim2.new(1, 0, 0, 5),
             })
-            new("UIPadding", {Parent = barRow, PaddingLeft = UDim.new(0, 12)})
             progFill = new("Frame", {
                 Name = "Fill", Parent = barRow,
                 Size = UDim2.new(1, 0, 0, 5),
@@ -2013,6 +1995,31 @@ local function createNotifications(window)
                 BorderSizePixel = 0,
             })
             new("UICorner", {Parent = progFill, CornerRadius = UDim.new(0, 4)})
+        end
+
+        -- Accent reactivity. If the caller did NOT pass opts.Color, the
+        -- prompt's accent floats with Theme.Accent — icon/buttons/progress
+        -- fill all swap when the theme changes, and the RichText `#0a9dff`
+        -- substitution in Title/Description gets re-rendered against the
+        -- new hex. If opts.Color WAS passed, everything stays locked to it.
+        local rawTitle = opts.Title or "Notification"
+        local rawDesc = opts.Description
+        if opts.Color == nil then
+            subscribeTheme("Accent", function(newAccent)
+                if promptObj._dismissed then return end
+                accent = newAccent
+                accentHex = colorHex(newAccent)
+                pcall(function() iconImg.ImageColor3 = newAccent end)
+                pcall(function() titleLbl.Text = applyPromptAccent(rawTitle) end)
+                if descLbl then pcall(function() descLbl.Text = applyPromptAccent(rawDesc) end) end
+                for _, ref in ipairs(buttonRefs) do
+                    if ref.primary then
+                        pcall(function() ref.btn.BackgroundColor3 = newAccent end)
+                        pcall(function() ref.txt.TextColor3 = newAccent end)
+                    end
+                end
+                if progFill then pcall(function() progFill.BackgroundColor3 = newAccent end) end
+            end)
         end
 
         -- Choreographed entrance.
@@ -2449,12 +2456,28 @@ function Library:CreateWindow(config)
         SortOrder = Enum.SortOrder.LayoutOrder,
     })
 
+    -- Resolve a flexible IconSize value into a UDim2. Accepts:
+    --   nil          → default 55x55
+    --   number n     → UDim2.new(0, n, 0, n)  (square)
+    --   {w, h}       → UDim2.new(0, w, 0, h)
+    --   UDim2        → as-is
+    local function resolveIconSize(value)
+        if value == nil then return UDim2.new(0, 55, 0, 55) end
+        if typeof(value) == "UDim2" then return value end
+        if type(value) == "number" then return UDim2.new(0, value, 0, value) end
+        if type(value) == "table" and value[1] and value[2] then
+            return UDim2.new(0, value[1], 0, value[2])
+        end
+        return UDim2.new(0, 55, 0, 55)
+    end
+
+    Window.IconSize = resolveIconSize(config.IconSize)
     Window.SidebarLogo = new("ImageLabel", {
         Name = "Logo", Parent = sideBar,
         AnchorPoint = Vector2.new(0.5, 0),
         Image = Window.Logo,
         BackgroundTransparency = 1,
-        Size = UDim2.new(0, 55, 0, 55),
+        Size = Window.IconSize,
         LayoutOrder = 0,
     })
 
@@ -2471,6 +2494,15 @@ function Library:CreateWindow(config)
         if watermark ~= false and self.Watermark and self.Watermark.SetIcon then
             self.Watermark:SetIcon(resolved)
         end
+    end
+
+    -- Update the sidebar icon's dimensions at runtime. Same flexible input
+    -- as the IconSize config field — number for square, {w, h} for rect,
+    -- UDim2 for exact control.
+    function Window:SetIconSize(size)
+        local resolved = resolveIconSize(size)
+        self.IconSize = resolved
+        if self.SidebarLogo then self.SidebarLogo.Size = resolved end
     end
 
     -- Update the breadcrumb label AND, by default, the watermark brand
