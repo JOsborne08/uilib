@@ -2157,7 +2157,7 @@ local function createBlurController(window)
         if not frame and builtins[name] then frame = builtins[name]() end
         if not frame then return nil end
 
-        -- Child overlay: dark translucent base + gradient for the frosted
+        -- Child overlay: light translucent base + gradient for the frosted
         -- look. ZIndex -1 so it sits behind the host's other children but
         -- in front of the host's own background. Transparency is 1-Intensity
         -- so Intensity=0 hides it and Intensity=1 makes it fully opaque.
@@ -2165,7 +2165,7 @@ local function createBlurController(window)
             Name = "\0BlurOverlay", Parent = frame,
             Size = UDim2.fromScale(1, 1),
             Position = UDim2.fromScale(0, 0),
-            BackgroundColor3 = Color3.fromRGB(15, 20, 30),
+            BackgroundColor3 = Color3.fromRGB(70, 85, 115),
             BackgroundTransparency = 1 - BC.Intensity,
             BorderSizePixel = 0,
             ZIndex = -1,
@@ -2174,9 +2174,10 @@ local function createBlurController(window)
         new("UIGradient", {
             Parent = overlay,
             Color = ColorSequence.new({
-                ColorSequenceKeypoint.new(0, Color3.fromRGB(55, 65, 85)),
-                ColorSequenceKeypoint.new(1, Color3.fromRGB(15, 20, 30)),
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(140, 155, 190)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(35, 45, 65)),
             }),
+            Transparency = NumberSequence.new(0.15),
             Rotation = 135,
         })
 
