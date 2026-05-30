@@ -14,6 +14,7 @@ local TweenService     = game:GetService("TweenService")
 local RunService       = game:GetService("RunService")
 local Players          = game:GetService("Players")
 local GuiService       = game:GetService("GuiService")
+local HttpService      = game:GetService("HttpService")
 local LocalPlayer      = Players.LocalPlayer
 
 if getgenv and getgenv().UILibrary then
@@ -84,6 +85,45 @@ Library.Flags = {}
 Library.MenuKeybind = Enum.KeyCode.RightControl
 Library.Windows = {}
 Library._connections = {}
+
+-- Config persistence (samet-style). Folders auto-created on load; SetFlags
+-- is a per-flag setter registry — each component populates it when it
+-- builds (Library.SetFlags[flag] = function(value) component:Set(value) end)
+-- so LoadConfig can re-apply a saved value without knowing the component
+-- type. Override Library.Folders BEFORE loading the lib if you want a
+-- different on-disk layout (e.g. per-game configs).
+Library.Folders = {
+    Directory = "SametLib",
+    Configs   = "SametLib/Configs",
+}
+Library.SetFlags = {}
+
+-- File-IO helpers — gracefully no-op in environments without the exploit
+-- file APIs (e.g. Studio). Wrap in pcall so a missing function or
+-- permission error never breaks the lib's load path. Reference globals
+-- directly — in Luau, undefined globals resolve to nil rather than
+-- erroring, which makes the simple form safe.
+do
+    local function safe(fn)
+        if type(fn) ~= "function" then return function() return false end end
+        return function(...)
+            local ok, result = pcall(fn, ...)
+            if not ok then return false end
+            return result
+        end
+    end
+    Library._isfolder   = safe(isfolder)
+    Library._makefolder = safe(makefolder)
+    Library._isfile     = safe(isfile)
+    Library._readfile   = safe(readfile)
+    Library._writefile  = safe(writefile)
+    Library._delfile    = safe(delfile)
+    Library._listfiles  = safe(listfiles)
+
+    for _, path in pairs(Library.Folders) do
+        if not Library._isfolder(path) then Library._makefolder(path) end
+    end
+end
 
 -- Bundled theme presets. Each is a full Theme snapshot — swapping a preset
 -- swaps ALL the slots in one go (via Library:ApplyTheme), so changes stay
@@ -423,6 +463,142 @@ function Library:OnThemeChange(key, fn)
     subscribeTheme(key, fn)
 end
 
+--// ============================================================
+--// Config (samet-style save/load)
+--// ============================================================
+-- Values that live in Library.Flags are mostly plain JSON-friendly types
+-- (bool, number, string, plain table). The two exceptions are KeyCode
+-- enums and Color3 values — those get wrapped in a small tagged table on
+-- serialize and unwrapped on deserialize so the round-trip is lossless.
+-- Component types tag their serialized form via the __type field so we
+-- never have to guess from shape.
+-- EnumType.Name returns just the enum's short name (e.g. "KeyCode") in
+-- modern Luau, which round-trips cleanly via Enum[Name][Item]. Avoiding
+-- tostring() here because its output format isn't formally guaranteed.
+local function serializeFlag(v)
+    local t = typeof(v)
+    if t == "EnumItem" then
+        local enumName
+        pcall(function() enumName = v.EnumType.Name end)
+        return {__type = "EnumItem", Enum = enumName or "KeyCode", Name = v.Name}
+    elseif t == "Color3" then
+        return {__type = "Color3", R = v.R, G = v.G, B = v.B}
+    elseif t == "Vector2" then
+        return {__type = "Vector2", X = v.X, Y = v.Y}
+    end
+    return v
+end
+
+local function deserializeFlag(v)
+    if type(v) ~= "table" then return v end
+    if v.__type == "EnumItem" then
+        local enumName = v.Enum or "KeyCode"
+        local ok, item = pcall(function() return Enum[enumName][v.Name] end)
+        if ok and item then return item end
+        return nil
+    elseif v.__type == "Color3" then
+        return Color3.new(v.R or 0, v.G or 0, v.B or 0)
+    elseif v.__type == "Vector2" then
+        return Vector2.new(v.X or 0, v.Y or 0)
+    end
+    return v
+end
+
+-- Snapshot every registered flag into a JSON-encodable table. Returns
+-- the table AND the encoded string — caller picks whichever they need.
+function Library:GetConfig()
+    local out = {}
+    for k, v in pairs(self.Flags) do
+        out[k] = serializeFlag(v)
+    end
+    return out, HttpService:JSONEncode(out)
+end
+
+-- Apply a config table OR a JSON string. Iterates the entries and calls
+-- the matching SetFlags setter — flags whose components weren't built
+-- this session are silently ignored. Returns (true, appliedCount) on
+-- success, (false, error) otherwise.
+function Library:LoadConfig(config)
+    if type(config) == "string" then
+        local ok, decoded = pcall(function() return HttpService:JSONDecode(config) end)
+        if not ok then return false, decoded end
+        config = decoded
+    end
+    if type(config) ~= "table" then return false, "expected table or JSON string" end
+    local applied = 0
+    for flag, raw in pairs(config) do
+        local setter = self.SetFlags[flag]
+        if setter then
+            local value = deserializeFlag(raw)
+            pcall(setter, value)
+            applied = applied + 1
+        end
+    end
+    return true, applied
+end
+
+-- File-IO wrappers. All return (true, ...) on success or (false, error)
+-- on failure — including "file APIs missing" if the executor doesn't
+-- expose writefile/readfile/etc.
+local function configPath(name)
+    return Library.Folders.Configs .. "/" .. name .. ".json"
+end
+
+function Library:SaveConfig(name)
+    if not name or name == "" then return false, "name required" end
+    local _, json = self:GetConfig()
+    local ok = self._writefile(configPath(name), json)
+    if ok == false then return false, "writefile failed" end
+    return true
+end
+
+function Library:LoadConfigFile(name)
+    if not name or name == "" then return false, "name required" end
+    local path = configPath(name)
+    if not self._isfile(path) then return false, "file not found" end
+    local src = self._readfile(path)
+    if not src or src == false then return false, "readfile failed" end
+    return self:LoadConfig(src)
+end
+
+function Library:DeleteConfig(name)
+    if not name or name == "" then return false, "name required" end
+    local path = configPath(name)
+    if not self._isfile(path) then return false, "file not found" end
+    self._delfile(path)
+    return true
+end
+
+-- Returns an array of config names (no path, no .json extension) found
+-- in Library.Folders.Configs. Empty array if the dir doesn't exist or
+-- listfiles isn't available in this environment.
+function Library:ListConfigs()
+    local out = {}
+    local files = self._listfiles(self.Folders.Configs)
+    if type(files) ~= "table" then return out end
+    for _, file in ipairs(files) do
+        if type(file) == "string" and file:sub(-5) == ".json" then
+            -- Strip trailing .json AND everything up to the last path
+            -- separator. Works for both / and \ separators since
+            -- different executors return different paths styles.
+            local name = file:sub(1, -6)
+            local slash = name:find("[/\\][^/\\]*$")
+            if slash then name = name:sub(slash + 1) end
+            table.insert(out, name)
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+-- Convenience for dropdown rebuild — pass a dropdown component built by
+-- Section:AddDropdown and it'll fire :Refresh(names) with the live list.
+function Library:RefreshConfigsList(element)
+    if element and type(element.Refresh) == "function" then
+        element:Refresh(self:ListConfigs())
+    end
+end
+
 local FONT_REG = Font.new("rbxassetid://12187365364", Enum.FontWeight.Regular)
 local FONT_MED = Font.new("rbxassetid://12187365364", Enum.FontWeight.Medium)
 Library.Font = FONT_REG
@@ -514,6 +690,7 @@ function Library:Unload()
     end
     self.Windows = {}
     table.clear(themeSubs)
+    table.clear(self.SetFlags)
     if getgenv then getgenv().UILibrary = nil end
 end
 
@@ -677,7 +854,8 @@ end
 --// BgHeader, every icon + accent text re-renders when Accent
 --// changes (RichText hex needs string rebuild, not a property tween).
 --// ============================================================
-local function createWatermark(window)
+local function createWatermark(window, opts)
+    opts = opts or {}
     local wmGui = new("ScreenGui", {
         Name = "\0UI_Watermark",
         Parent = (gethui and gethui()) or CoreGui,
@@ -800,10 +978,27 @@ local function createWatermark(window)
         }
     end
 
+    -- Brand text builder — splits the name on the first space or period
+    -- and renders the leading part (including the separator) in accent
+    -- color, the trailing part plain. So "LUMIE.WTF" → "LUMIE." accent +
+    -- "WTF" plain; "ENI Hub" → "ENI " accent + "Hub" plain; a single
+    -- word like "ENI" goes entirely in accent.
+    WM._brandName = opts.name or "Brand"
+    WM._brandIcon = opts.icon or "rbxassetid://133489527524318"
+    local function buildBrand()
+        local name = WM._brandName or ""
+        local accentHex = colorHex(Theme.Accent)
+        local sepStart, sepEnd = name:find("[%. ]")
+        if sepStart then
+            local head = name:sub(1, sepEnd)
+            local tail = name:sub(sepEnd + 1)
+            return string.format('<font color="#%s">%s</font>%s', accentHex, head, tail)
+        end
+        return string.format('<font color="#%s">%s</font>', accentHex, name)
+    end
+
     -- Segment definitions match the supplied dump's icons + text format.
-    makeSegment("Logo", "rbxassetid://133489527524318", function()
-        return string.format('<font color="#%s">LUMIE.</font>WTF', colorHex(Theme.Accent))
-    end)
+    makeSegment("Logo", WM._brandIcon, buildBrand)
     makeSegment("FPS", "rbxassetid://131275369407636", function()
         return string.format('fps <font color="#%s">%d</font>',
             colorHex(Theme.Accent), math.floor((WM._fps or 0) + 0.5))
@@ -871,6 +1066,21 @@ local function createWatermark(window)
 
     -- Accent change → rebuild every label so the embedded hex updates.
     subscribeTheme("Accent", function() WM:Refresh() end)
+
+    -- Runtime brand customization. SetName rebuilds the Logo segment's
+    -- text via the brand builder (smart split on first space/period).
+    -- SetIcon swaps the asset on the Logo segment's ImageLabel directly.
+    function WM:SetName(name)
+        self._brandName = name or ""
+        self:Refresh()
+    end
+
+    function WM:SetIcon(icon)
+        local resolved = resolveIcon(icon)
+        self._brandIcon = resolved
+        local seg = self.Segments and self.Segments.Logo
+        if seg and seg.Icon then seg.Icon.Image = resolved end
+    end
 
     WM:Refresh()
     return WM
@@ -1247,13 +1457,32 @@ local function createNotifications(window)
         VerticalAlignment = Enum.VerticalAlignment.Bottom,
     })
 
+    -- Separate top-left container for rich prompts. Prompts can't share
+    -- the bottom-center stack because (a) they're persistent until user
+    -- action and (b) MAX_VIS eviction on regular toasts would lose them.
+    local promptHolder = new("Frame", {
+        Name = "PromptHolder", Parent = gui,
+        AnchorPoint = Vector2.new(0, 0),
+        Position = UDim2.fromOffset(12, 12),
+        Size = UDim2.new(0, 1, 0, 1),
+        AutomaticSize = Enum.AutomaticSize.XY,
+        BackgroundTransparency = 1, BorderSizePixel = 0,
+    })
+    new("UIListLayout", {
+        Parent = promptHolder,
+        Padding = UDim.new(0, 12),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    })
+
     local ICON_MAP = {
-        hit     = "rbxassetid://95956300578145",
-        reload  = "rbxassetid://133489527524318",
-        cart    = "rbxassetid://133489527524318",
-        info    = "rbxassetid://79554098175447",
-        warning = "rbxassetid://79554098175447",
-        default = "rbxassetid://95956300578145",
+        hit      = "rbxassetid://95956300578145",
+        reload   = "rbxassetid://133489527524318",
+        cart     = "rbxassetid://133489527524318",
+        info     = "rbxassetid://79554098175447",
+        warning  = "rbxassetid://70479764730792",
+        collapse = "rbxassetid://118645616697622",
+        close    = "rbxassetid://124971904960139",
+        default  = "rbxassetid://95956300578145",
     }
     local MAX_VIS = 6
 
@@ -1399,6 +1628,448 @@ local function createNotifications(window)
         task.delay(duration, function() dismiss(entry) end)
 
         return entry
+    end
+
+    -- Rich confirmation prompt — header (icon + title + collapse + close),
+    -- body (description text + optional action buttons), optional progress
+    -- bar with click-to-stop affordance. Lives in the top-left stacking
+    -- container, not the bottom-center toast queue (prompts wait for user
+    -- action and shouldn't get evicted by passing toasts).
+    --
+    -- opts = {
+    --   Title         (string, RichText supported)
+    --   Description   (string, RichText supported)
+    --   Icon          (registered icon name or asset id; default "warning")
+    --   Color         (Color3 accent override; default Theme.Accent)
+    --   Buttons       (array of {Text, Style="primary"|"secondary", Callback})
+    --   Duration      (seconds for auto-dismiss + progress bar; nil = persist)
+    --   ProgressText  (string, default "click to <b>stop</b>")
+    --   Collapsible   (bool, default true — show collapse button)
+    --   OnDismiss     (function called on any dismissal path)
+    -- }
+    function N:Prompt(opts)
+        opts = opts or {}
+        local accent = opts.Color or Theme.Accent
+        local accentHex = colorHex(accent)
+        -- Per-prompt accent substitution — if the user passed an override
+        -- Color, RichText `#0a9dff` literals in Title/Description should
+        -- adopt THAT color, not the global Theme.Accent. Local helper
+        -- shadows the outer applyAccent for this prompt only.
+        local function applyPromptAccent(text)
+            if not text or text == "" then return "" end
+            return (text:gsub("#0a9dff", "#" .. accentHex))
+        end
+        -- Icon resolution: check notification-specific ICON_MAP first
+        -- (warning/info/hit/cart/etc), then fall through to the global icon
+        -- registry so users can pass "flame"/"shield"/etc OR raw asset URLs.
+        local iconAsset
+        if opts.Icon then
+            iconAsset = ICON_MAP[opts.Icon] or resolveIcon(opts.Icon)
+        else
+            iconAsset = ICON_MAP.warning
+        end
+        local duration = opts.Duration
+        local showProgress = duration ~= nil
+        local promptObj = {_dismissed = false}
+
+        local wrapper = new("Frame", {
+            Name = "PromptWrap", Parent = promptHolder,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            AutomaticSize = Enum.AutomaticSize.XY,
+            Size = UDim2.new(0, 0, 0, 0),
+            ClipsDescendants = true,
+        })
+
+        local notif = new("Frame", {
+            Name = "Prompt", Parent = wrapper,
+            BackgroundColor3 = Theme.Background,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.new(0, 1, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.XY,
+        })
+        themed(notif, "BackgroundColor3", "Background")
+        new("UICorner", {Parent = notif, CornerRadius = UDim.new(0, 6)})
+        new("UIListLayout", {Parent = notif, SortOrder = Enum.SortOrder.LayoutOrder})
+
+        local notifScale = new("UIScale", {Parent = notif, Scale = 0.92})
+
+        -- ── Header (icon + title on left, collapse + close on right)
+        local header = new("Frame", {
+            Name = "Header", Parent = notif, LayoutOrder = 0,
+            BackgroundColor3 = Theme.BgDark,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Size = UDim2.new(0, 1, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.XY,
+        })
+        themed(header, "BackgroundColor3", "BgDark")
+        new("UICorner", {Parent = header, CornerRadius = UDim.new(0, 6)})
+        new("UIPadding", {
+            Parent = header,
+            PaddingTop = UDim.new(0, 4), PaddingRight = UDim.new(0, 4),
+            PaddingLeft = UDim.new(0, 6),
+        })
+        new("UIListLayout", {
+            Parent = header,
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 24),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+
+        local leftHolder = new("Frame", {
+            Name = "Holder", Parent = header, LayoutOrder = 0,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(0, 64, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.XY,
+        })
+        new("UIListLayout", {
+            Parent = leftHolder,
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+
+        local iconHolder = new("Frame", {
+            Name = "IconHolder", Parent = leftHolder, LayoutOrder = 0,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(0, 30, 0, 30),
+        })
+        local iconImg = new("ImageLabel", {
+            Parent = iconHolder,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(0, 20, 0, 20),
+            BackgroundTransparency = 1,
+            Image = iconAsset,
+            ImageColor3 = accent,
+            ImageTransparency = 1,
+        })
+        local iconScale = new("UIScale", {Parent = iconImg, Scale = 0.6})
+
+        local titleHolder = new("Frame", {
+            Name = "TitleHolder", Parent = leftHolder, LayoutOrder = 1,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(0, 1, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.XY,
+        })
+        new("UIListLayout", {
+            Parent = titleHolder,
+            VerticalAlignment = Enum.VerticalAlignment.Center,
+            HorizontalAlignment = Enum.HorizontalAlignment.Center,
+            FillDirection = Enum.FillDirection.Horizontal,
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+        local titleLbl = new("TextLabel", {
+            Name = "Title", Parent = titleHolder,
+            BackgroundTransparency = 1,
+            Text = applyPromptAccent(opts.Title or "Notification"),
+            TextColor3 = Theme.Text,
+            FontFace = FONT_MED, TextSize = 14,
+            RichText = true,
+            Size = UDim2.new(0, 1, 0, 1),
+            AutomaticSize = Enum.AutomaticSize.XY,
+            TextTransparency = 1,
+        })
+        themed(titleLbl, "TextColor3", "Text")
+
+        -- ── Control buttons (right side)
+        local controlHolder = new("Frame", {
+            Name = "ControlHolder", Parent = header, LayoutOrder = 1,
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            Size = UDim2.new(0, 1, 0, 30),
+            AutomaticSize = Enum.AutomaticSize.XY,
+        })
+        new("UIListLayout", {
+            Parent = controlHolder,
+            FillDirection = Enum.FillDirection.Horizontal,
+            Padding = UDim.new(0, 2),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        })
+
+        -- Render the description body BEFORE wiring the collapse button so
+        -- it can reference the body's Visible state.
+        local descHolder
+        if opts.Description or (opts.Buttons and #opts.Buttons > 0) then
+            descHolder = new("Frame", {
+                Name = "DescriptionHolder", Parent = notif, LayoutOrder = 1,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(0, 1, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIListLayout", {
+                Parent = descHolder,
+                Padding = UDim.new(0, 8),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            })
+            new("UIPadding", {
+                Parent = descHolder,
+                PaddingBottom = UDim.new(0, 12),
+                PaddingLeft = UDim.new(0, 12),
+            })
+        end
+
+        local descLbl
+        if descHolder and opts.Description then
+            local textHolder = new("Frame", {
+                Name = "TextHolder", Parent = descHolder, LayoutOrder = 0,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(1, 1, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIPadding", {Parent = textHolder, PaddingLeft = UDim.new(0, 26)})
+            new("UIListLayout", {Parent = textHolder, SortOrder = Enum.SortOrder.LayoutOrder})
+            descLbl = new("TextLabel", {
+                Parent = textHolder,
+                BackgroundTransparency = 1,
+                Text = applyPromptAccent(opts.Description),
+                TextColor3 = Theme.TextDim,
+                FontFace = FONT_MED, TextSize = 14,
+                RichText = true,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Size = UDim2.new(0, 1, 0, 1),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                TextTransparency = 1,
+            })
+            themed(descLbl, "TextColor3", "TextDim")
+            new("UISizeConstraint", {Parent = descLbl, MaxSize = Vector2.new(320, math.huge)})
+        end
+
+        -- Action buttons (Continue / Cancel etc).
+        local buttonRefs = {}
+        if descHolder and opts.Buttons and #opts.Buttons > 0 then
+            local btnHolder = new("Frame", {
+                Name = "ButtonHolder", Parent = descHolder, LayoutOrder = 1,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(0, 1, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIPadding", {Parent = btnHolder, PaddingLeft = UDim.new(0, 26)})
+            new("UIListLayout", {
+                Parent = btnHolder,
+                FillDirection = Enum.FillDirection.Horizontal,
+                Padding = UDim.new(0, 8),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            })
+            for i, btnCfg in ipairs(opts.Buttons) do
+                local isPrimary = (btnCfg.Style or "primary") == "primary"
+                local btn = new("TextButton", {
+                    Name = "Button", Parent = btnHolder, LayoutOrder = i,
+                    BackgroundColor3 = isPrimary and accent or Theme.BgDark,
+                    BackgroundTransparency = isPrimary and 0.95 or 1,
+                    BorderSizePixel = 0,
+                    Size = UDim2.new(0, 1, 0, 1),
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    Text = "",
+                    AutoButtonColor = false,
+                })
+                new("UICorner", {Parent = btn, CornerRadius = UDim.new(0, 6)})
+                if not isPrimary then
+                    local stroke = new("UIStroke", {Parent = btn, Color = Theme.TextSub, Thickness = 1})
+                    themed(stroke, "Color", "TextSub")
+                end
+                local txt = new("TextLabel", {
+                    Parent = btn,
+                    BackgroundTransparency = 1,
+                    Text = btnCfg.Text or "Button",
+                    TextColor3 = isPrimary and accent or Theme.TextSub,
+                    FontFace = FONT_MED, TextSize = 14,
+                    Size = UDim2.new(0, 1, 0, 1),
+                    AutomaticSize = Enum.AutomaticSize.XY,
+                    TextTransparency = 1,
+                })
+                if not isPrimary then themed(txt, "TextColor3", "TextSub") end
+                new("UIPadding", {
+                    Parent = txt,
+                    PaddingTop = UDim.new(0, 6), PaddingBottom = UDim.new(0, 6),
+                    PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+                })
+                btn.MouseEnter:Connect(function()
+                    tween(btn, {BackgroundTransparency = isPrimary and 0.85 or 0.9}, TI_QUICK)
+                end)
+                btn.MouseLeave:Connect(function()
+                    tween(btn, {BackgroundTransparency = isPrimary and 0.95 or 1}, TI_QUICK)
+                end)
+                btn.MouseButton1Click:Connect(function()
+                    if btnCfg.Callback then pcall(btnCfg.Callback) end
+                    promptObj:Dismiss()
+                end)
+                buttonRefs[i] = {btn = btn, txt = txt}
+            end
+        end
+
+        -- ── Control buttons (collapse + close) — built AFTER body so the
+        -- collapse handler can toggle descHolder visibility.
+        local function makeControlBtn(asset, name, order)
+            local btn = new("TextButton", {
+                Name = name, Parent = controlHolder, LayoutOrder = order,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(0, 30, 0, 30),
+                Text = "", AutoButtonColor = false,
+            })
+            local img = new("ImageLabel", {
+                Name = name .. "Icon", Parent = btn,
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(0, 20, 0, 20),
+                BackgroundTransparency = 1,
+                Image = asset,
+                ImageColor3 = Theme.TextSub,
+                ImageTransparency = 1,
+            })
+            themed(img, "ImageColor3", "TextSub")
+            btn.MouseEnter:Connect(function() tween(img, {ImageColor3 = Theme.Text}, TI_QUICK) end)
+            btn.MouseLeave:Connect(function() tween(img, {ImageColor3 = Theme.TextSub}, TI_QUICK) end)
+            return btn, img
+        end
+
+        local collapsed = false
+        if opts.Collapsible ~= false and descHolder then
+            local collapseBtn = makeControlBtn(ICON_MAP.collapse, "CollapseButton", 0)
+            collapseBtn.MouseButton1Click:Connect(function()
+                collapsed = not collapsed
+                descHolder.Visible = not collapsed
+            end)
+        end
+        local closeBtn = makeControlBtn(ICON_MAP.close, "CloseButton", 1)
+        closeBtn.MouseButton1Click:Connect(function() promptObj:Dismiss() end)
+
+        -- ── Progress bar (optional)
+        local progFill, progStopBtn
+        if showProgress then
+            local progHolder = new("Frame", {
+                Name = "ProgressHolder", Parent = notif, LayoutOrder = 2,
+                BackgroundColor3 = Theme.BgDark,
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Size = UDim2.new(1, 1, 0, 20),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            themed(progHolder, "BackgroundColor3", "BgDark")
+            new("UICorner", {Parent = progHolder, CornerRadius = UDim.new(0, 6)})
+            new("UIPadding", {Parent = progHolder, PaddingRight = UDim.new(0, 12)})
+            new("UIListLayout", {
+                Parent = progHolder,
+                FillDirection = Enum.FillDirection.Horizontal,
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            })
+
+            local innerHolder = new("Frame", {
+                Name = "Holder", Parent = progHolder,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(0, 1, 0, 1),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIListLayout", {
+                Parent = innerHolder,
+                Padding = UDim.new(0, 6),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            })
+
+            local stopWrap = new("Frame", {
+                Name = "TextHolder", Parent = innerHolder, LayoutOrder = 0,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(0, 1, 0, 10),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIPadding", {
+                Parent = stopWrap,
+                PaddingTop = UDim.new(0, 6),
+                PaddingLeft = UDim.new(0, 12),
+            })
+            new("UIListLayout", {
+                Parent = stopWrap,
+                FillDirection = Enum.FillDirection.Horizontal,
+                Padding = UDim.new(0, 12),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+            })
+            progStopBtn = new("TextButton", {
+                Parent = stopWrap, LayoutOrder = 0,
+                BackgroundTransparency = 1,
+                Text = opts.ProgressText or 'click to <b>stop</b>',
+                TextColor3 = Theme.TextSub,
+                FontFace = FONT_MED, TextSize = 14,
+                RichText = true,
+                Size = UDim2.new(0, 1, 0, 1),
+                AutomaticSize = Enum.AutomaticSize.XY,
+                AutoButtonColor = false,
+                TextTransparency = 1,
+            })
+            themed(progStopBtn, "TextColor3", "TextSub")
+            progStopBtn.MouseButton1Click:Connect(function() promptObj:Dismiss() end)
+
+            local barRow = new("Frame", {
+                Name = "Progressbar", Parent = innerHolder, LayoutOrder = 1,
+                BackgroundTransparency = 1, BorderSizePixel = 0,
+                Size = UDim2.new(1, 1, 0, 5),
+                AutomaticSize = Enum.AutomaticSize.XY,
+            })
+            new("UIPadding", {Parent = barRow, PaddingLeft = UDim.new(0, 12)})
+            progFill = new("Frame", {
+                Name = "Fill", Parent = barRow,
+                Size = UDim2.new(1, 0, 0, 5),
+                BackgroundColor3 = accent,
+                BorderSizePixel = 0,
+            })
+            new("UICorner", {Parent = progFill, CornerRadius = UDim.new(0, 4)})
+        end
+
+        -- Choreographed entrance.
+        local springOut = TweenInfo.new(0.5,  Enum.EasingStyle.Back,  Enum.EasingDirection.Out)
+        local softOut   = TweenInfo.new(0.32, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+        local smoothOut = TweenInfo.new(0.4,  Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+        tween(notifScale, {Scale = 1}, springOut)
+        tween(notif, {BackgroundTransparency = 0}, softOut)
+        task.delay(0.06, function()
+            if promptObj._dismissed then return end
+            tween(iconImg, {ImageTransparency = 0}, softOut)
+            tween(iconScale, {Scale = 1}, springOut)
+        end)
+        task.delay(0.12, function()
+            if promptObj._dismissed then return end
+            tween(titleLbl, {TextTransparency = 0}, smoothOut)
+            if descLbl then tween(descLbl, {TextTransparency = 0}, smoothOut) end
+            for _, ref in ipairs(buttonRefs) do
+                tween(ref.txt, {TextTransparency = 0}, smoothOut)
+            end
+            if progStopBtn then tween(progStopBtn, {TextTransparency = 0}, smoothOut) end
+        end)
+
+        function promptObj:Dismiss()
+            if self._dismissed then return end
+            self._dismissed = true
+            if opts.OnDismiss then pcall(opts.OnDismiss) end
+            local softIn = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+            tween(notifScale, {Scale = 0.95}, softIn)
+            tween(notif, {BackgroundTransparency = 1}, softIn)
+            for _, child in ipairs({titleLbl, descLbl, progStopBtn}) do
+                if child then pcall(function() tween(child, {TextTransparency = 1}, softIn) end) end
+            end
+            for _, ref in ipairs(buttonRefs) do
+                pcall(function() tween(ref.txt, {TextTransparency = 1}, softIn) end)
+                pcall(function() tween(ref.btn, {BackgroundTransparency = 1}, softIn) end)
+            end
+            tween(iconImg, {ImageTransparency = 1}, softIn)
+            task.delay(0.12, function()
+                local w = wrapper.AbsoluteSize.X
+                tween(wrapper, {Size = UDim2.new(0, w, 0, 0)}, softIn)
+            end)
+            task.delay(0.42, function()
+                if wrapper.Parent then wrapper:Destroy() end
+            end)
+        end
+
+        -- Progress bar drains over `duration` seconds; expiration dismisses
+        -- the prompt unless the user already clicked something.
+        if showProgress and progFill and duration and duration > 0 then
+            tween(progFill, {Size = UDim2.new(0, 0, 0, 5)},
+                TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.Out))
+            task.delay(duration, function() promptObj:Dismiss() end)
+        end
+
+        return promptObj
     end
 
     function N:RegisterIcon(key, assetId) ICON_MAP[key] = assetId end
@@ -1647,8 +2318,13 @@ function Library:CreateWindow(config)
     -- On-screen watermark in the top-left. Independent of the main UI's
     -- visibility (lives in its own ScreenGui) — show/hide via
     -- Window.Watermark:SetVisible and toggle individual chunks via
-    -- :SetSegmentVisible / :SetActiveSegments.
-    Window.Watermark = createWatermark(Window)
+    -- :SetSegmentVisible / :SetActiveSegments. Brand name + icon
+    -- default to the window's, override via WatermarkName/WatermarkIcon.
+    Window.Watermark = createWatermark(Window, {
+        name = config.WatermarkName or Window.Name,
+        icon = (config.WatermarkIcon and resolveIcon(config.WatermarkIcon))
+            or resolvedIcon,
+    })
 
     -- Keybind list (top-right) — components with ShowInList=true on their
     -- keybind cfg auto-register here. Manual API: :Add / :Remove / :Toggle.
@@ -1784,12 +2460,29 @@ function Library:CreateWindow(config)
 
     -- Swap the sidebar icon at runtime. Accepts the same forms as the
     -- Icon config field: registered icon name ("sword"/"flame"/etc) OR a
-    -- raw rbxassetid:// / http(s):// URL.
-    function Window:SetIcon(icon)
+    -- raw rbxassetid:// / http(s):// URL. Also propagates to the
+    -- watermark's Logo segment so both stay in sync — pass `false` for
+    -- watermark if you want to keep the watermark icon independent.
+    function Window:SetIcon(icon, watermark)
         local resolved = resolveIcon(icon)
         self.Logo = resolved
         self.Icon = resolved
         if self.SidebarLogo then self.SidebarLogo.Image = resolved end
+        if watermark ~= false and self.Watermark and self.Watermark.SetIcon then
+            self.Watermark:SetIcon(resolved)
+        end
+    end
+
+    -- Update the breadcrumb label AND, by default, the watermark brand
+    -- text. Pass watermark=false to keep them independent (e.g. when the
+    -- watermark should display a shorter "ENI" while the window header
+    -- shows the full "ENI Hub").
+    function Window:SetName(name, watermark)
+        self.Name = name
+        if self.BreadcrumbText then self.BreadcrumbText.Text = name end
+        if watermark ~= false and self.Watermark and self.Watermark.SetName then
+            self.Watermark:SetName(name)
+        end
     end
 
     local tabsHolder = new("Frame", {
@@ -2816,7 +3509,10 @@ buildSection = function(Tab, config)
             updateColor(not silent)
         end
 
-        if cfg.Flag then Library.Flags[cfg.Flag] = CP.Value end
+        if cfg.Flag then
+            Library.Flags[cfg.Flag] = CP.Value
+            Library.SetFlags[cfg.Flag] = function(v) CP:Set(v) end
+        end
         updateColor(false)
         return CP
     end
@@ -2987,6 +3683,9 @@ buildSection = function(Tab, config)
         function Toggle:Keybind(kcfg)
             kcfg = kcfg or {}
             local KB = {Key = kcfg.Default}
+            if kcfg.Flag and kcfg.Default then
+                Library.Flags[kcfg.Flag] = kcfg.Default
+            end
 
             -- Optional integration with the window's keybind list widget.
             -- ShowInList=true tells the list to show this binding while
@@ -3147,6 +3846,18 @@ buildSection = function(Tab, config)
                 syncList()
             end
 
+            if kcfg.Flag then
+                -- KB:Set updates the pill visuals + list, but doesn't touch
+                -- Library.Flags or the user callback (that's done in the
+                -- input handler on a real keypress). Mirror those here so
+                -- a config load fully restores the bind.
+                Library.SetFlags[kcfg.Flag] = function(v)
+                    KB:Set(v)
+                    Library.Flags[kcfg.Flag] = v
+                    if kcfg.Callback then pcall(kcfg.Callback, v) end
+                end
+            end
+
             -- Catch the case where the toggle starts ON with a default key —
             -- the syncList from the Set wrap fired before Keybind was wired.
             if showInList and Toggle.Value and KB.Key then
@@ -3166,6 +3877,9 @@ buildSection = function(Tab, config)
         end
 
         Toggle:Set(Toggle.Value, false)
+        -- Config-load setter — fires the callback so user-side state
+        -- (speed, ESP, etc) actually re-applies, not just the UI.
+        Library.SetFlags[flag] = function(v) Toggle:Set(v, true) end
         Toggle.Frame = row
         Toggle.Box = box
         Toggle._searchKey = (cfg.Name or "toggle"):lower()
@@ -3304,6 +4018,7 @@ buildSection = function(Tab, config)
 
         function Slider:Set(v) setValue(v, true) end
         setValue(Slider.Value, false)
+        Library.SetFlags[flag] = function(v) Slider:Set(tonumber(v) or v) end
         Slider.Frame = row
         Slider._searchKey = (cfg.Name or "slider"):lower()
         function Slider:Tooltip(text) return attachTooltip(self, sliderName, text) end
@@ -3390,6 +4105,7 @@ buildSection = function(Tab, config)
 
         function TB:Set(v) input.Text = tostring(v); commit() end
         commit()
+        Library.SetFlags[flag] = function(v) TB:Set(v) end
         TB.Frame = row
         TB.Instance = input
         TB._searchKey = (cfg.Name or "textbox"):lower()
@@ -3711,6 +4427,7 @@ buildSection = function(Tab, config)
         end
         refresh()
         Library.Flags[flag] = DD.Value
+        Library.SetFlags[flag] = function(v) DD:Set(v) end
         DD.Frame = row
         DD._searchKey = (cfg.Name or "dropdown"):lower()
         function DD:Tooltip(text) return attachTooltip(self, ddName, text) end
@@ -3724,6 +4441,7 @@ buildSection = function(Tab, config)
         cfg = cfg or {}
         local flag = cfg.Flag or nextFlag("keybind")
         local KB = {Key = cfg.Default, Flag = flag}
+        if cfg.Default then Library.Flags[flag] = cfg.Default end
 
         -- Keybind list integration — standalone keybinds show in the list
         -- whenever a key is bound (no toggle state to gate on).
@@ -3804,6 +4522,14 @@ buildSection = function(Tab, config)
             self.Key = k
             pill.Text = k and k.Name or "—"
             syncList()
+        end
+        -- KB:Set is intentionally minimal (visual + list only). The setter
+        -- below mirrors what the live input handler does — write to Flags
+        -- and fire Callback — so a config load fully restores the bind.
+        Library.SetFlags[flag] = function(v)
+            KB:Set(v)
+            Library.Flags[flag] = v
+            if cfg.Callback then pcall(cfg.Callback, v) end
         end
         KB.Frame = row
         KB._searchKey = (cfg.Name or "keybind"):lower()
