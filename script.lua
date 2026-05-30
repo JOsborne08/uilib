@@ -1942,9 +1942,9 @@ local function createNotifications(window)
         closeBtn.MouseButton1Click:Connect(function() promptObj:Dismiss() end)
 
         -- ── Progress bar (optional)
-        local progFill, progStopBtn
+        local progFill, progStopBtn, progHolder
         if showProgress then
-            local progHolder = new("Frame", {
+            progHolder = new("Frame", {
                 Name = "ProgressHolder", Parent = notif, LayoutOrder = 2,
                 BackgroundColor3 = Theme.BgDark,
                 BackgroundTransparency = 1,
@@ -2029,6 +2029,11 @@ local function createNotifications(window)
 
         tween(notifScale, {Scale = 1}, springOut)
         tween(notif, {BackgroundTransparency = 0}, softOut)
+        -- Header and progress bar share the same fade-in window as the
+        -- main body so the layered bg/header design becomes visible. Both
+        -- followed `themed(..., "BgDark")` but were stuck at transparency 1.
+        tween(header, {BackgroundTransparency = 0}, softOut)
+        if progHolder then tween(progHolder, {BackgroundTransparency = 0}, softOut) end
         task.delay(0.06, function()
             if promptObj._dismissed then return end
             tween(iconImg, {ImageTransparency = 0}, softOut)
@@ -2051,6 +2056,8 @@ local function createNotifications(window)
             local softIn = TweenInfo.new(0.2, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
             tween(notifScale, {Scale = 0.95}, softIn)
             tween(notif, {BackgroundTransparency = 1}, softIn)
+            tween(header, {BackgroundTransparency = 1}, softIn)
+            if progHolder then tween(progHolder, {BackgroundTransparency = 1}, softIn) end
             for _, child in ipairs({titleLbl, descLbl, progStopBtn}) do
                 if child then pcall(function() tween(child, {TextTransparency = 1}, softIn) end) end
             end
