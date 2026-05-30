@@ -4051,44 +4051,4 @@ createSettingsPopup = function(anchor, opts, Tab)
     return Section
 end
 
---// ============================================================
---// LIVE EXAMPLE — runs when this file loads
---// Press RightControl to toggle the menu
---// ============================================================
-
-
--- Per-slot color pickers with two-way sync. The chip's Callback writes to
--- the theme; an OnThemeChange listener writes back to the chip (silent so
--- it doesn't re-fire Callback). That means presets/loads update every
--- chip in the section in real time.
-local function themeRow(label, key)
-    local cp
-    cp = Theming:AddLabel(label):Colorpicker({
-        Default = Theme[key],
-        Flag = "Theme_" .. key,
-        Callback = function(c) Library:SetTheme(key, c) end,
-    })
-    Library:OnThemeChange(key, function(value)
-        if cp.Value == value then return end
-        cp:Set(value, nil, true)
-    end)
-end
-
-themeRow("Background",       "Background")
-themeRow("Section",          "BgDark")
-themeRow("Header / Element", "BgHeader")
-themeRow("Search Bar",       "BgSearch")
-themeRow("Accent",           "Accent")
-themeRow("Hover",            "Hover")
-themeRow("Selected",         "Selected")
-themeRow("Text",             "Text")
-themeRow("Text Inactive",    "TextInactive")
-themeRow("Text Disabled",    "TextDisabled")
-themeRow("Text Dim",         "TextDim")
-themeRow("Text Sub",         "TextSub")
-themeRow("Text Placeholder", "TextPH")
-themeRow("Stroke",           "Stroke")
-themeRow("Check Icon",       "CheckIcon")
-
---// ============================================================
 return Library
