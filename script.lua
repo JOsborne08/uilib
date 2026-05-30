@@ -2503,9 +2503,20 @@ function Library:CreateWindow(config)
         Name = "Logo", Parent = sideBar,
         Image = Window.Logo,
         BackgroundTransparency = 1,
+        ImageColor3 = Theme.Accent,
         Size = Window.IconSize,
         LayoutOrder = 0,
     })
+    -- Logo is themed against Accent — works correctly for grayscale/white
+    -- source assets (the tint multiplies cleanly). Colored source assets
+    -- will multiply too and look off; pass an already-grayscale icon if
+    -- you want clean accent tinting. Opt out with Window:UntintLogo() if
+    -- the caller's icon is intentionally colored.
+    themed(Window.SidebarLogo, "ImageColor3", "Accent")
+
+    function Window:UntintLogo()
+        if self.SidebarLogo then self.SidebarLogo.ImageColor3 = Color3.new(1, 1, 1) end
+    end
 
     -- Swap the sidebar icon at runtime. Accepts the same forms as the
     -- Icon config field: registered icon name ("sword"/"flame"/etc) OR a
