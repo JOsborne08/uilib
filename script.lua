@@ -1997,29 +1997,35 @@ local function createNotifications(window)
             new("UICorner", {Parent = progFill, CornerRadius = UDim.new(0, 4)})
         end
 
-        -- Accent reactivity. If the caller did NOT pass opts.Color, the
-        -- prompt's accent floats with Theme.Accent — icon/buttons/progress
-        -- fill all swap when the theme changes, and the RichText `#0a9dff`
-        -- substitution in Title/Description gets re-rendered against the
-        -- new hex. If opts.Color WAS passed, everything stays locked to it.
+        -- Accent reactivity. All accent-tinted elements (icon, title/desc
+        -- RichText, primary buttons, progress fill) are re-painted from
+        -- ONE helper. The helper picks the live accent — opts.Color if
+        -- the caller locked one in, otherwise the current Theme.Accent.
+        -- It's invoked once explicitly RIGHT NOW (so the initial paint
+        -- always reflects the current theme, no matter what stale values
+        -- the constructors captured) and then again on every Theme.Accent
+        -- change (when not locked).
         local rawTitle = opts.Title or "Notification"
         local rawDesc = opts.Description
-        if opts.Color == nil then
-            subscribeTheme("Accent", function(newAccent)
-                if promptObj._dismissed then return end
-                accent = newAccent
-                accentHex = colorHex(newAccent)
-                pcall(function() iconImg.ImageColor3 = newAccent end)
-                pcall(function() titleLbl.Text = applyPromptAccent(rawTitle) end)
-                if descLbl then pcall(function() descLbl.Text = applyPromptAccent(rawDesc) end) end
-                for _, ref in ipairs(buttonRefs) do
-                    if ref.primary then
-                        pcall(function() ref.btn.BackgroundColor3 = newAccent end)
-                        pcall(function() ref.txt.TextColor3 = newAccent end)
-                    end
+        local function applyAccent()
+            if promptObj._dismissed then return end
+            local a = opts.Color or Theme.Accent
+            accent = a
+            accentHex = colorHex(a)
+            pcall(function() iconImg.ImageColor3 = a end)
+            pcall(function() titleLbl.Text = applyPromptAccent(rawTitle) end)
+            if descLbl then pcall(function() descLbl.Text = applyPromptAccent(rawDesc) end) end
+            for _, ref in ipairs(buttonRefs) do
+                if ref.primary then
+                    pcall(function() ref.btn.BackgroundColor3 = a end)
+                    pcall(function() ref.txt.TextColor3 = a end)
                 end
-                if progFill then pcall(function() progFill.BackgroundColor3 = newAccent end) end
-            end)
+            end
+            if progFill then pcall(function() progFill.BackgroundColor3 = a end) end
+        end
+        applyAccent()
+        if opts.Color == nil then
+            subscribeTheme("Accent", applyAccent)
         end
 
         -- Choreographed entrance.
