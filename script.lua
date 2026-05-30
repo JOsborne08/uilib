@@ -2450,9 +2450,19 @@ function Library:CreateWindow(config)
     })
     new("UICorner", {Parent = sideBar, CornerRadius = UDim.new(0, 8)})
     themed(sideBar, "BackgroundColor3", "Background")
-    new("UIPadding", {Parent = sideBar, PaddingTop = UDim.new(0, 18), PaddingLeft = UDim.new(0, 2)})
+    -- PaddingRight = 5 accounts for the SBLiner overlap at the sidebar's
+    -- right edge — the rightmost 5px of the sidebar is hidden behind the
+    -- liner that masks the seam with MainPage. Subtracting it from the
+    -- layout's available area means HorizontalAlignment.Center actually
+    -- centers in the VISIBLE 70px column, not the full 75px frame.
+    new("UIPadding", {
+        Parent = sideBar,
+        PaddingTop = UDim.new(0, 18),
+        PaddingRight = UDim.new(0, 5),
+    })
     new("UIListLayout", {
         Parent = sideBar, Padding = UDim.new(0, 16),
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
         SortOrder = Enum.SortOrder.LayoutOrder,
     })
 
@@ -2474,7 +2484,6 @@ function Library:CreateWindow(config)
     Window.IconSize = resolveIconSize(config.IconSize)
     Window.SidebarLogo = new("ImageLabel", {
         Name = "Logo", Parent = sideBar,
-        AnchorPoint = Vector2.new(0.5, 0),
         Image = Window.Logo,
         BackgroundTransparency = 1,
         Size = Window.IconSize,
